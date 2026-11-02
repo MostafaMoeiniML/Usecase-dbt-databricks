@@ -1,0 +1,16 @@
+version: 2
+
+sources:
+  - name: bronze
+    description: "Raw CSV extracts loaded as-is (all columns STRING) by setup/01_load_bronze.sql"
+    database: workspace
+    schema: bronze
+    tables:
+      - name: customers
+        description: "Client demographics and segmentation. One row per client."
+      - name: orders
+        description: "Core transactions. One row per billing period of a subscription (orderdate -> expiredate)."
+      - name: subscriptions
+        description: "Subscription lifecycle and status. One row per subscription."
+      - name: products
+        description: "Product hierarchy: product -> subgroup -> group -> subcategory -> category."
