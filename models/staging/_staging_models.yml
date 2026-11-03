@@ -1,0 +1,247 @@
+version: 2
+
+models:
+
+  - name: stg_customers
+    description: >
+      Cleaned customers. One row per client (grain: client_id). No rows removed.
+      Text 'NULL' converted to real NULL, join_date cast to date.
+    columns:
+      - name: client_id
+        description: "Client identifier (primary key)."
+        data_tests:
+          - unique
+          - not_null
+      - name: client_country
+        description: "Client country. NULL when Bronze held the text 'NULL' (856 rows)."
+      - name: join_date
+        description: >
+          Date the client joined. NULL for the 36 internal Registry clients.
+          One client has a join_date after the 2019-2023 analysis window (2024-05-09); kept as delivered.
+      - name: segment
+        description: "Customer segment (Ret-E, Ret-N, Res, obp, Registry)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Ret-E', 'Ret-N', 'Res', 'obp', 'Registry']
+      - name: is_missing_join_date
+        description: "True when join_date is NULL."
+        data_tests:
+          - not_null
+      - name: is_internal
+        description: >
+          True for internal registry accounts (client_id ends with '-EUROMNT' or segment = 'Registry').
+          Excluded from customer KPIs downstream.
+        data_tests:
+          - not_null
+
+  - name: stg_subscriptions
+    description: >
+      Cleaned subscriptions. One row per subscription (grain: subscription_id). No rows removed.
+      Client and product on orders take precedence over this table downstream.
+    columns:
+      - name: subscription_id
+        description: "Subscription identifier (primary key)."
+        data_tests:
+          - unique
+          - not_null
+      - name: creation_date
+        description: >
+          Date the subscription was created. start_date is earlier than creation_date for 2,084 rows
+          (e.g. backdated or transferred subscriptions); this is not flagged.
+        data_tests:
+          - not_null
+      - name: start_date
+        description: "Start of the subscription. 18 subscriptions start after the 2019-2023 analysis window; kept as delivered."
+        data_tests:
+          - not_null
+      - name: expire_date
+        description: "Current expiry of the subscription (can lie in the future, up to 2036)."
+        data_tests:
+          - not_null
+      - name: status
+        description: "Lifecycle status. NULL when Bronze held the text 'NULL' (122,072 rows, ~72%)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['SUSPENDED', 'MAINTENANCE CHANGED', 'CANCELLED', 'TOWEPANEL', 'OWNER CHANGED',
+                         'AWAITING PAYMENT', 'TO DELETE', 'PRE-WAIVED', 'UNPAID', 'OWNER CHANGE IN PROGRESS',
+                         'LOST', 'TO VERIFY']
+              config:
+                severity: warn
+      - name: product_code
+        description: "Product code as recorded on the subscription."
+        data_tests:
+          - not_null
+      - name: is_invalid_date
+        description: "True when a date is missing or expire_date < start_date."
+        data_tests:
+          - not_null
+
+  - name: stg_products
+    description: >
+      Cleaned product hierarchy: product -> subgroup -> group -> subcategory -> category.
+      One row per product (grain: product_id). No rows removed. Misaligned rows are repaired,
+      stray quotes and trailing commas are removed from all values.
+    data_tests:
+      # No stray quotes, separators or trailing commas may survive the cleaning.
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: >
+              not rlike(concat_ws('|', product_id, product_code, product_desc, product_subgroup_desc,
+              product_group_desc, product_subcat_desc, product_cat_desc), '[";]|,$|,\\|')
+    columns:
+      - name: product_id
+        description: "Product identifier (primary key)."
+        data_tests:
+          - unique
+          - not_null
+      - name: product_code
+        description: "Product code (joins to subscriptions.product_code)."
+        data_tests:
+          - unique
+          - not_null
+      - name: product_desc
+        description: "Product description."
+        data_tests:
+          - not_null
+      - name: product_subgroup_desc
+        description: "Product subgroup."
+        data_tests:
+          - not_null
+      - name: product_group_desc
+        description: "Product group."
+        data_tests:
+          - not_null
+      - name: product_subcat_desc
+        description: "Product subcategory."
+        data_tests:
+          - not_null
+      - name: product_cat_desc
+        description: "Product category. Renamed from the broken Bronze header `product_cat_desc,,,,`; trailing commas stripped."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Domains', 'Hosting', 'Applications', 'Other']
+      - name: is_repaired_row
+        description: >
+          True when the Bronze row was misaligned (product_id contained ';'). Its first three fields were
+          split out of product_id and the remaining values shifted back two columns.
+        data_tests:
+          - not_null
+
+  - name: stg_orders
+    description: >
+      Cleaned orders. One row per billing period of a subscription (grain: order_line_id).
+      Exact duplicate rows in Bronze are removed (the only rows dropped in staging);
+      all other quality issues are flagged, not removed.
+    columns:
+      - name: order_line_id
+        description: >
+          Surrogate key: hash of all 12 raw Bronze columns, computed after dedupe.
+          Needed because ordercode + renewcode is not unique.
+        data_tests:
+          - unique
+          - not_null
+      - name: client_id
+        description: "Client who placed the order. Source of truth for the client of a subscription."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: client_id
+      - name: ordercode
+        description: "Order code (alphanumeric, not unique)."
+      - name: renewcode
+        description: "Renewal code. NULL when Bronze held the text 'NULL' (2 rows)."
+      - name: order_date
+        description: "Start of the billing period."
+        data_tests:
+          - not_null
+      - name: expire_date
+        description: "End of the billing period."
+        data_tests:
+          - not_null
+      - name: subscription_id
+        description: "Subscription the order belongs to. NULL when Bronze held the text 'NULL'."
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_subscriptions')
+                field: subscription_id
+              config:
+                severity: warn
+      - name: product_id
+        description: "Product ordered. Source of truth for the product of a subscription."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+      - name: quantity
+        description: "Quantity as delivered (0 or 1). Not used for MRR."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+                quote: false
+      - name: product_price_eur
+        description: "Price of the billing period in EUR. Negative values are credits."
+        data_tests:
+          - not_null
+      - name: currency
+        description: "Currency code. Always EUR."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['EUR']
+      - name: duration_months_source
+        description: "Billing period length in months as delivered (0 for 104 rows)."
+        data_tests:
+          - not_null
+      - name: duration_months
+        description: >
+          Billing period length in months used for MRR. Equals duration_months_source when it is > 0.
+          When the delivered value is 0 and expire_date > order_date, it is derived as
+          CEIL(months_between(expire_date, order_date)), so any partial month counts as one month.
+          NULL when it cannot be derived (see is_invalid_duration).
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+              config:
+                where: "duration_months is not null"
+      - name: is_recurring
+        description: "True when Bronze flag_recurring = 1."
+        data_tests:
+          - not_null
+      - name: is_credit
+        description: "True when product_price_eur < 0 (credit note / refund). Excluded from MRR."
+        data_tests:
+          - not_null
+      - name: is_placeholder_price
+        description: "True when product_price_eur = 0.01 (placeholder price). Treated as 0 MRR."
+        data_tests:
+          - not_null
+      - name: is_invalid_date
+        description: >
+          True when a date is missing or expire_date < order_date. Covers the 7 order_dates after 2023.
+          Excluded from MRR.
+        data_tests:
+          - not_null
+      - name: is_duration_derived
+        description: "True when duration_months was derived from the dates because the delivered value was 0."
+        data_tests:
+          - not_null
+      - name: is_invalid_duration
+        description: "True when duration_months is NULL (delivered as 0 and not derivable from the dates). Excluded from MRR."
+        data_tests:
+          - not_null
+      - name: has_subscription_id
+        description: "True when the order references a subscription."
+        data_tests:
+          - not_null
