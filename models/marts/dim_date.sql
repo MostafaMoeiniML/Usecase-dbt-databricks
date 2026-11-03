@@ -27,7 +27,7 @@ select
     month(month_end_date)                                           as month_number,
     date_format(month_end_date, 'MMMM')                             as month_name,
     date_format(month_end_date, 'yyyy-MM')                          as year_month,
-    -- Reporting window: before 2019 expired periods are missing from the extract (ramp-up),
-    -- from 2022-12 renewals expiring after 2023 are missing (run-off).
-    month_end_date between date'2019-01-31' and date'2022-11-30'    as is_reporting_month
+    -- Reporting window from dbt vars (see dbt_project.yml for why these months).
+    month_end_date between date'{{ var("reporting_start_month") }}'
+                       and date'{{ var("reporting_end_month") }}'   as is_reporting_month
 from month_ends

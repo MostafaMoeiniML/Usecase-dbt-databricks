@@ -14,6 +14,12 @@ clean-targets:
   - "target"
   - "dbt_packages"
 
+vars:
+  # Reporting window (month-ends). The extract only holds periods expiring 2019-2023:
+  # earlier months miss expired periods (ramp-up), later months miss renewals expiring after 2023 (run-off).
+  reporting_start_month: '2019-01-31'
+  reporting_end_month: '2022-11-30'
+
 models:
   teamblue_revenue:
     staging:
