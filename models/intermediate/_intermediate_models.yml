@@ -1,0 +1,127 @@
+version: 2
+
+models:
+
+  - name: int_orders_enriched
+    description: >
+      Order lines from stg_orders enriched with cross-table flags and the MRR eligibility rule.
+      One row per order line (grain: order_line_id), same row count as stg_orders.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('stg_orders')
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: >
+              not is_mrr_eligible
+              or (is_recurring and not is_credit and not is_invalid_date
+                  and not is_invalid_duration and not is_internal_client)
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(mrr_eur is not null) = is_mrr_eligible"
+    columns:
+      - name: order_line_id
+        description: "Surrogate key of the order line (from stg_orders)."
+        data_tests:
+          - unique
+          - not_null
+      - name: product_code
+        description: "Product code of the ordered product (from stg_products)."
+        data_tests:
+          - not_null
+      - name: period_end_date
+        description: >
+          End of the MRR period: order_date + duration_months (exclusive). The line counts at every month-end
+          with order_date <= month_end < period_end_date. NULL when duration_months is NULL.
+      - name: has_unknown_subscription
+        description: "True when subscription_id is set but does not exist in stg_subscriptions (4 lines). Kept."
+        data_tests:
+          - not_null
+      - name: has_product_mismatch
+        description: "True when the order's product_code differs from its subscription's product_code. Orders win; flag only."
+        data_tests:
+          - not_null
+      - name: has_subscription_conflict
+        description: "True when the subscription is linked to more than one client or product across its order lines. Flag only."
+        data_tests:
+          - not_null
+      - name: is_internal_client
+        description: "True when the client is an internal registry account (stg_customers.is_internal). Excluded from MRR."
+        data_tests:
+          - not_null
+      - name: is_mrr_eligible
+        description: >
+          True when the line counts for MRR: recurring, not a credit, valid dates, valid duration and not an internal client.
+          Placeholder-price lines are eligible but carry 0 MRR.
+        data_tests:
+          - not_null
+      - name: is_paid_line
+        description: "True when the line is MRR-eligible and not a placeholder price (0.01). Only paid lines make a customer active."
+        data_tests:
+          - not_null
+      - name: mrr_eur
+        description: >
+          Monthly recurring revenue of the line in EUR: product_price_eur / duration_months for paid lines,
+          0 for placeholder lines, NULL for lines that are not MRR-eligible.
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"
+              config:
+                where: "mrr_eur is not null"
+
+  - name: int_mrr_order_months
+    description: >
+      End-of-month MRR snapshot per order line. One row per MRR-eligible order line per month-end at which it is active
+      (grain: order_line_id x month_end_date). A line is active at month-end M when order_date <= M < period_end_date,
+      so each line has exactly duration_months rows and its MRR sums to its price.
+      All month-ends are kept; the reporting window (2019-01 to 2022-11) is applied in Gold via dim_date.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['order_line_id', 'month_end_date']
+    columns:
+      - name: order_line_id
+        description: "Order line (from int_orders_enriched)."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('int_orders_enriched')
+                field: order_line_id
+      - name: month_end_date
+        description: "Last day of the month at which the line is active."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "= last_day(month_end_date)"
+      - name: client_id
+        description: "Client of the order line."
+        data_tests:
+          - not_null
+      - name: product_id
+        description: "Product of the order line."
+        data_tests:
+          - not_null
+      - name: subscription_id
+        description: "Subscription of the order line (NULL when the order has none)."
+      - name: month_number
+        description: "Position of the month-end within the line's period: 1 = first month, duration_months = last month."
+        data_tests:
+          - not_null
+      - name: duration_months
+        description: "Length of the line's period in months."
+        data_tests:
+          - not_null
+      - name: mrr_eur
+        description: "MRR of the line at this month-end in EUR (0 for placeholder lines)."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"
+      - name: is_paid_line
+        description: "True when the line is not a placeholder price."
+        data_tests:
+          - not_null
