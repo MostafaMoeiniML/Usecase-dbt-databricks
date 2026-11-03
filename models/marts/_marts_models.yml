@@ -1,0 +1,317 @@
+version: 2
+
+models:
+
+  - name: dim_date
+    description: >
+      Month-end calendar. One row per month-end (grain: month_end_date), covering every month in the facts.
+      Filter reports on is_reporting_month.
+    columns:
+      - name: month_end_date
+        description: "Last day of the month (primary key)."
+        data_tests:
+          - unique
+          - not_null
+      - name: month_start_date
+        description: "First day of the month."
+      - name: year
+        description: "Calendar year."
+      - name: quarter
+        description: "Calendar quarter (1-4)."
+      - name: year_quarter
+        description: "Year and quarter label, e.g. 2021-Q4."
+      - name: month_number
+        description: "Month of the year (1-12)."
+      - name: month_name
+        description: "Month name, e.g. December."
+      - name: year_month
+        description: "Year and month label, e.g. 2021-12."
+      - name: is_reporting_month
+        description: >
+          True for month-ends 2019-01 to 2022-11. Before 2019 periods that expired earlier are missing from the extract
+          (MRR ramp-up); from 2022-12 renewals expiring after 2023 are missing (run-off).
+        data_tests:
+          - not_null
+
+  - name: dim_customer
+    description: "One row per client (grain: client_id), including clients without paid MRR."
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          arguments:
+            compare_model: ref('stg_customers')
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "has_paid_mrr = (cohort_month is not null)"
+    columns:
+      - name: client_id
+        description: "Client identifier (primary key)."
+        data_tests:
+          - unique
+          - not_null
+      - name: client_country
+        description: "Client country (NULL when unknown)."
+      - name: segment
+        description: "Customer segment."
+      - name: join_date
+        description: "Date the client joined."
+      - name: is_internal
+        description: "True for internal registry accounts; they have no MRR."
+        data_tests:
+          - not_null
+      - name: has_paid_mrr
+        description: "True when the client has paid MRR in at least one month-end."
+        data_tests:
+          - not_null
+      - name: cohort_month
+        description: >
+          First month-end with paid MRR in the extract. Because the extract starts in 2018, this is not always the
+          real start of the relationship (see is_new_logo in fct_customer_monthly).
+      - name: first_product_cat_desc
+        description: "Category of the highest-MRR paid product in the cohort month (ties: alphabetical)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Domains', 'Hosting', 'Applications', 'Other']
+
+  - name: dim_product
+    description: "One row per product (grain: product_id) with the full hierarchy: product -> subgroup -> group -> subcategory -> category."
+    columns:
+      - name: product_id
+        description: "Product identifier (primary key)."
+        data_tests:
+          - unique
+          - not_null
+      - name: product_code
+        description: "Product code."
+        data_tests:
+          - unique
+          - not_null
+      - name: product_desc
+        description: "Product description."
+      - name: product_subgroup_desc
+        description: "Product subgroup."
+      - name: product_group_desc
+        description: "Product group."
+      - name: product_subcat_desc
+        description: "Product subcategory."
+      - name: product_cat_desc
+        description: "Product category."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Domains', 'Hosting', 'Applications', 'Other']
+
+  - name: fct_mrr_monthly
+    description: >
+      Paid MRR and MRR movements per client x product x month-end (grain: client_id, product_id, month_end_date).
+      One row per month with paid MRR, plus a churn row (mrr_eur = 0) in the first month without paid MRR.
+      All months are kept; filter on dim_date.is_reporting_month. Used for category performance.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['client_id', 'product_id', 'month_end_date']
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "mrr_change_eur = mrr_eur - previous_mrr_eur"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "mrr_eur > 0 or previous_mrr_eur > 0"
+    columns:
+      - name: client_id
+        description: "Client."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: client_id
+      - name: product_id
+        description: "Product."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_product')
+                field: product_id
+      - name: month_end_date
+        description: "Month-end of the snapshot."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: month_end_date
+      - name: mrr_eur
+        description: "Paid MRR at this month-end (closing MRR). 0 on churn rows."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"
+      - name: previous_mrr_eur
+        description: "Paid MRR at the previous month-end (opening MRR)."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"
+      - name: mrr_change_eur
+        description: "mrr_eur - previous_mrr_eur."
+        data_tests:
+          - not_null
+      - name: movement_type
+        description: >
+          new (first paid month of this client x product), reactivation (paid again after a gap),
+          churn (paid last month, not this month), expansion, contraction, unchanged.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['new', 'expansion', 'contraction', 'churn', 'reactivation', 'unchanged']
+      - name: new_mrr_eur
+        description: "MRR added by a new movement (positive)."
+      - name: expansion_mrr_eur
+        description: "MRR added by an expansion (positive)."
+      - name: reactivation_mrr_eur
+        description: "MRR added by a reactivation (positive)."
+      - name: contraction_mrr_eur
+        description: "MRR lost by a contraction (positive)."
+      - name: churn_mrr_eur
+        description: "MRR lost by a churn (positive)."
+
+  - name: fct_customer_monthly
+    description: >
+      Paid MRR, movements and KPI flags per client x month-end (grain: client_id, month_end_date).
+      One row per month with paid MRR, plus a churn row (mrr_eur = 0) in the first month without paid MRR.
+      All months are kept; filter on dim_date.is_reporting_month.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['client_id', 'month_end_date']
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "mrr_change_eur = mrr_eur - previous_mrr_eur"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_active = (mrr_eur > 0)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "is_cross_sold = (paid_category_count > 1)"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "months_since_cohort >= 0"
+    columns:
+      - name: client_id
+        description: "Client."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customer')
+                field: client_id
+      - name: month_end_date
+        description: "Month-end of the snapshot."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: month_end_date
+      - name: mrr_eur
+        description: "Paid MRR of the client at this month-end (closing MRR). 0 on churn rows."
+        data_tests:
+          - not_null
+      - name: previous_mrr_eur
+        description: "Paid MRR at the previous month-end (opening MRR)."
+        data_tests:
+          - not_null
+      - name: mrr_change_eur
+        description: "mrr_eur - previous_mrr_eur."
+        data_tests:
+          - not_null
+      - name: movement_type
+        description: >
+          Customer-level movement on total paid MRR: new (cohort month), reactivation, churn (immediate: first month-end
+          without paid MRR), expansion, contraction, unchanged. Used for the MRR bridge.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['new', 'expansion', 'contraction', 'churn', 'reactivation', 'unchanged']
+      - name: new_mrr_eur
+        description: "MRR added by a new customer (positive)."
+      - name: expansion_mrr_eur
+        description: "MRR added by an expansion (positive)."
+      - name: reactivation_mrr_eur
+        description: "MRR added by a reactivation (positive)."
+      - name: contraction_mrr_eur
+        description: "MRR lost by a contraction (positive)."
+      - name: churn_mrr_eur
+        description: "MRR lost by a churn (positive)."
+      - name: is_active
+        description: "True when the client has paid MRR at this month-end."
+        data_tests:
+          - not_null
+      - name: is_new
+        description: "True in the cohort month (first paid month in the extract)."
+        data_tests:
+          - not_null
+      - name: is_new_logo
+        description: >
+          True for a new movement where join_date is within 12 months of the cohort month. ~70% of 'new' customers in the
+          reporting window joined more than 13 months earlier (their earlier history is outside the extract), so this is
+          the acquisition KPI.
+        data_tests:
+          - not_null
+      - name: is_churned
+        description: "True on the first month-end without paid MRR (immediate churn; drives the bridge)."
+        data_tests:
+          - not_null
+      - name: is_reactivated
+        description: "True when paid MRR returns after at least one month-end without it."
+        data_tests:
+          - not_null
+      - name: is_churned_after_grace
+        description: "Churn KPI with a 1-month grace period: churned and not back at the next month-end."
+        data_tests:
+          - not_null
+      - name: is_reactivated_after_grace
+        description: "Reactivation after more than 1 inactive month-end (returns within the grace period excluded)."
+        data_tests:
+          - not_null
+      - name: inactive_months
+        description: >
+          On churn rows: month-ends without paid MRR until the client returns (NULL if never).
+          On reactivation rows: month-ends without paid MRR before the return. NULL on other rows.
+      - name: is_probable_data_gap
+        description: >
+          True on churn / reactivation rows with 11-13 or 23-25 inactive months: matches one or two renewal periods
+          missing from the extract. Upper bound (part of these are real returns) and under-detected for churn after
+          ~2022-01, because the returns would fall in the 2023 run-off.
+        data_tests:
+          - not_null
+      - name: paid_product_count
+        description: "Number of distinct paid products at this month-end."
+        data_tests:
+          - not_null
+      - name: paid_category_count
+        description: "Number of distinct paid product categories at this month-end (placeholder products excluded)."
+        data_tests:
+          - not_null
+      - name: is_cross_sold
+        description: "True when the client has paid MRR in more than one product category."
+        data_tests:
+          - not_null
+      - name: has_free_bundled_product
+        description: "True when the client also holds a placeholder-price (0.01) product at this month-end. Adoption only."
+        data_tests:
+          - not_null
+      - name: cohort_month
+        description: "First month-end with paid MRR (from dim_customer)."
+        data_tests:
+          - not_null
+      - name: months_since_cohort
+        description: "Months between cohort_month and this month-end (0 in the cohort month)."
+        data_tests:
+          - not_null
