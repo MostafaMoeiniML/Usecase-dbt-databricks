@@ -42,6 +42,22 @@ free_bundled_months as (
 
 ),
 
+-- Paid subscriptions per client with their own lifecycle dates. Ended or blocked statuses are left out.
+open_paid_subscriptions as (
+
+    select distinct
+        orders.client_id,
+        subscriptions.start_date,
+        subscriptions.expire_date
+    from {{ ref('int_orders_enriched') }} as orders
+    inner join {{ ref('stg_subscriptions') }} as subscriptions
+        on orders.subscription_id = subscriptions.subscription_id
+    where orders.is_paid_line
+      and not orders.has_subscription_conflict
+      and coalesce(subscriptions.status, '') not in ('CANCELLED', 'SUSPENDED', 'TO DELETE', 'LOST', 'UNPAID')
+
+),
+
 -- The month after a paid month without paid MRR gets an explicit 0 row, so churned MRR shows up as a movement.
 churn_months as (
 
@@ -120,6 +136,22 @@ with_inactive_months as (
         end as inactive_months
     from classified
 
+),
+
+-- A churn is contradicted when the customer still holds a paid subscription that started before and
+-- expires after the churn month: the order for that period is most likely missing from the extract.
+contradicted_churns as (
+
+    select distinct
+        churns.client_id,
+        churns.month_end_date
+    from with_inactive_months as churns
+    inner join open_paid_subscriptions
+        on churns.client_id = open_paid_subscriptions.client_id
+       and open_paid_subscriptions.start_date <= churns.month_end_date
+       and open_paid_subscriptions.expire_date > churns.month_end_date
+    where churns.movement_type = 'churn'
+
 )
 
 select
@@ -156,6 +188,7 @@ select
         and (inactive_months between 11 and 13 or inactive_months between 23 and 25),
         false
     )                                as is_probable_data_gap,
+    contradicted_churns.client_id is not null as is_contradicted_by_subscription,
 
     paid_product_count,
     paid_category_count,
@@ -168,3 +201,6 @@ from with_inactive_months
 left join free_bundled_months
     on with_inactive_months.client_id = free_bundled_months.client_id
    and with_inactive_months.month_end_date = free_bundled_months.month_end_date
+left join contradicted_churns
+    on with_inactive_months.client_id = contradicted_churns.client_id
+   and with_inactive_months.month_end_date = contradicted_churns.month_end_date

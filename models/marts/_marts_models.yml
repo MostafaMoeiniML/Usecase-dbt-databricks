@@ -201,6 +201,9 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "months_since_cohort >= 0"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "not is_contradicted_by_subscription or is_churned"
     columns:
       - name: client_id
         description: "Client."
@@ -291,6 +294,14 @@ models:
           ~2022-01, because the returns would fall in the 2023 run-off.
         data_tests:
           - not_null
+      - name: is_contradicted_by_subscription
+        description: >
+          True on churn rows where the customer still holds a paid subscription that started on or before and expires
+          after the churn month (stg_subscriptions.expire_date), excluding Cancelled, Suspended, To delete, Lost and
+          Unpaid statuses. The order for that period is most likely missing from the extract. Flag only: churn logic
+          and movement types are unchanged.
+        data_tests:
+          - not_null
       - name: paid_product_count
         description: "Number of distinct paid products at this month-end."
         data_tests:
@@ -315,3 +326,187 @@ models:
         description: "Months between cohort_month and this month-end (0 in the cohort month)."
         data_tests:
           - not_null
+
+  - name: rpt_kpi_monthly
+    description: >
+      KPI framework: one row per reporting month (grain: month_end_date, 47 rows) with the 10 KPIs, the MRR bridge
+      components and 3 supplementary diagnostics. Reference table to check Power BI figures against.
+      Absolute churn, NRR and GRR levels are affected by order lines missing from the extract (see docs/kpi_framework.md):
+      trends are reliable, levels are lower bounds for retention.
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "grr_pct <= nrr_pct + 0.000001"
+          config:
+            where: "nrr_pct is not null"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(mrr_growth_yoy_pct is null) = (nrr_pct is null) and (nrr_pct is null) = (grr_pct is null)"
+    columns:
+      - name: month_end_date
+        description: "Reporting month-end (primary key)."
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: month_end_date
+      - name: opening_mrr_eur
+        description: "MRR at the previous month-end."
+      - name: new_mrr_eur
+        description: "MRR from new customers."
+      - name: expansion_mrr_eur
+        description: "MRR added by existing customers."
+      - name: reactivation_mrr_eur
+        description: "MRR from returning customers."
+      - name: contraction_mrr_eur
+        description: "MRR lost by customers who stay active (positive)."
+      - name: churn_mrr_eur
+        description: "MRR lost by churned customers (positive, immediate churn)."
+      - name: mrr_eur
+        description: "KPI 1 - MRR at the month-end (closing, paid lines only)."
+        data_tests:
+          - not_null
+      - name: mrr_growth_mom_pct
+        description: "KPI 2 - MRR growth vs previous month, in %."
+      - name: mrr_growth_yoy_pct
+        description: "KPI 2 (headline) - MRR growth vs 12 months earlier, in %. NULL until 2019-11 (incomplete 2018 base)."
+      - name: net_new_mrr_eur
+        description: "KPI 3 - new + expansion + reactivation - contraction - churn."
+        data_tests:
+          - not_null
+      - name: nrr_pct
+        description: >
+          KPI 4 - Net revenue retention, trailing 12 months: current MRR of customers paying 12 months ago / their MRR
+          then, in %. NULL until 2019-11. Lower bound (missing order lines).
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+      - name: grr_pct
+        description: "KPI 5 - Gross revenue retention: as NRR, each customer capped at their MRR 12 months ago, in %. NULL until 2019-11. Lower bound."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: customer_churn_rate_pct
+        description: "KPI 6 - Customers churned after the 1-month grace period / customers active at the previous month-end, in %. Upper bound."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: active_customers
+        description: "KPI 7 - Customers with paid MRR at the month-end."
+        data_tests:
+          - not_null
+      - name: new_logos
+        description: "KPI 8 - New customers that joined within 12 months of their first paid month."
+        data_tests:
+          - not_null
+      - name: arpu_eur
+        description: "KPI 9 - MRR / active paying customers."
+        data_tests:
+          - not_null
+      - name: cross_sell_rate_pct
+        description: "KPI 10 - Share of active customers with paid MRR in more than one product category, in %."
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: quick_ratio
+        description: "Supplementary - (new + expansion + reactivation) / (contraction + churn). Above 1 means MRR grows."
+      - name: customer_churn_rate_excl_data_gap_pct
+        description: "Supplementary - KPI 6 excluding churn events flagged is_probable_data_gap, in %."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: churn_rate_excl_contradicted_pct
+        description: >
+          Supplementary - KPI 6 excluding churn events contradicted by a still-running paid subscription
+          (is_contradicted_by_subscription), in %. Lower-bound estimate of the true churn rate.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: mrr_lines_over_12m_eur
+        description: "Supplementary - MRR from order lines longer than 12 months; shows the multi-year run-off in 2021-2022."
+      - name: opening_customers
+        description: "Customers with paid MRR at the previous month-end (churn rate denominator)."
+      - name: churned_customers
+        description: "Customers churned after the grace period (churn rate numerator)."
+      - name: churned_customers_excl_data_gap
+        description: "Churned customers excluding probable data gaps."
+      - name: churned_customers_excl_contradicted
+        description: "Churned customers excluding churn events contradicted by a still-running paid subscription."
+      - name: cross_sold_customers
+        description: "Active customers with paid MRR in more than one category."
+      - name: base_mrr_12m_ago_eur
+        description: "MRR of the retention base 12 months earlier (NRR / GRR denominator)."
+
+  - name: rpt_category_monthly
+    description: >
+      Category performance: one row per product category per reporting month (grain: month_end_date, product_cat_desc).
+      Movements are at client x product grain, so product swaps within a category show as churn plus new.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['month_end_date', 'product_cat_desc']
+    columns:
+      - name: month_end_date
+        description: "Reporting month-end."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_date')
+                field: month_end_date
+      - name: product_cat_desc
+        description: "Product category."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Domains', 'Hosting', 'Applications', 'Other']
+      - name: opening_mrr_eur
+        description: "Category MRR at the previous month-end."
+      - name: new_mrr_eur
+        description: "MRR from client x product combinations paid for the first time."
+      - name: expansion_mrr_eur
+        description: "MRR added on existing client x product combinations."
+      - name: reactivation_mrr_eur
+        description: "MRR from client x product combinations that return."
+      - name: contraction_mrr_eur
+        description: "MRR lost on continuing client x product combinations (positive)."
+      - name: churn_mrr_eur
+        description: "MRR lost when a client stops paying for a product (positive)."
+      - name: mrr_eur
+        description: "Category MRR at the month-end."
+        data_tests:
+          - not_null
+      - name: net_new_mrr_eur
+        description: "new + expansion + reactivation - contraction - churn."
+      - name: active_customers
+        description: "Clients with paid MRR in the category."
+      - name: arpu_eur
+        description: "Category MRR / clients with paid MRR in the category."
+      - name: share_of_mrr_pct
+        description: "Category share of total MRR, in %."
+        data_tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+      - name: gross_mrr_churn_rate_pct
+        description: "churn_mrr_eur / opening_mrr_eur, in %."
+      - name: mrr_growth_yoy_pct
+        description: "Category MRR growth vs 12 months earlier, in %. NULL until 2019-11 (incomplete 2018 base)."
