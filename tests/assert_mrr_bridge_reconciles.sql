@@ -5,7 +5,7 @@ with bridge as (
     select
         'product' as grain,
         month_end_date,
-        sum(previous_mrr_eur)       as opening_mrr_eur,
+        sum(opening_mrr_eur)        as opening_mrr_eur,
         sum(new_mrr_eur)            as new_mrr_eur,
         sum(expansion_mrr_eur)      as expansion_mrr_eur,
         sum(reactivation_mrr_eur)   as reactivation_mrr_eur,
@@ -20,7 +20,7 @@ with bridge as (
     select
         'customer',
         month_end_date,
-        sum(previous_mrr_eur),
+        sum(opening_mrr_eur),
         sum(new_mrr_eur),
         sum(expansion_mrr_eur),
         sum(reactivation_mrr_eur),

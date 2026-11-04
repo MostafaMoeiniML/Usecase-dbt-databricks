@@ -5,7 +5,7 @@ with expected as (
     select
         dates.month_end_date,
         coalesce(sum(facts.mrr_eur), 0)          as mrr_eur,
-        coalesce(sum(facts.previous_mrr_eur), 0) as opening_mrr_eur,
+        coalesce(sum(facts.opening_mrr_eur), 0) as opening_mrr_eur,
         coalesce(count_if(facts.is_active), 0)   as active_customers
     from {{ ref('dim_date') }} as dates
     left join {{ ref('fct_customer_monthly') }} as facts

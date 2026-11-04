@@ -15,7 +15,7 @@ by hand behave as the business rules intend.
 
 | Models | Tests | Pass | Warn | Error |
 |---|---|---|---|---|
-| 11 (4 views, 7 tables) | 136 | 146 | 1 | 0 |
+| 11 (4 views, 7 tables) | 150 | 160 | 1 | 0 |
 
 The pass count covers both the model builds and the tests. The single warning is expected:
 4 orders reference a `subscription_id` that does not exist in the subscriptions table. They are kept and
@@ -44,9 +44,9 @@ data quality items in the project documentation.
 | − placeholder prices | | −65,742 at 0 MRR | Price 0.01, free bundled products [5]. Kept as eligible with 0 MRR. |
 | **Paid lines** | **108,114** | | Drive MRR and active status |
 | Order-line-months (`int_mrr_order_months`) | 2,077,661 | | Eligible lines × month-ends active (1,340,158 paid) |
-| Paid client × product × month-ends | 1,213,973 | −126,185 combined | Several lines of the same product in one month are summed |
+| Paid customer × product × month-ends | 1,213,973 | −126,185 combined | Several lines of the same product in one month are summed |
 | **`fct_mrr_monthly`** | **1,305,536** | +91,563 churn rows | Churn row (MRR 0) in the first month without paid MRR |
-| Paid client × month-ends | 961,564 | | |
+| Paid customer × month-ends | 961,564 | | |
 | **`fct_customer_monthly`** | **1,026,018** | +64,454 churn rows | Churn row at customer level |
 
 **Flagged, not removed** (orders are the source of truth):
@@ -131,13 +131,13 @@ Italy, segment Ret-E, joined 2017-03-03. One Applications product (1588).
 **Why this is correct**
 
 - **2019-08 new**: the first line starts on 2019-08-14, so it is active on 2019-08-31. This is the
-  customer's first paid month, so it is the cohort month. It is not a new logo: the customer joined 29
+  customer's first paid month, so it is the `first_paid_month`. It is not a new logo: the customer joined 29
   months earlier.
 - **2020-08 expansion**: the first period ends on 2020-08-14, before the August month-end, and the renewal
   starts on 2020-08-15. At 2020-08-31 only the renewal is active, at a higher price (€33.90 instead of
   €25.00), so MRR rises from €2.08 to €2.83. The renewal is contiguous, with no gap and no double count.
 - **2021-08 churn**: the renewal ends on 2021-08-15 and there is no further order, so there is no paid MRR
-  at 2021-08-31. This is churn under both definitions (`is_churned_after_grace = true`).
+  at 2021-08-31. This is churn under both definitions (`is_churned = true`).
 - In total the customer has 24 paid month-ends, 12 per 12-month line, and the MRR sums to €25.00 + €33.90
   = €58.90.
 
@@ -157,14 +157,14 @@ Italy, segment Ret-E, joined 2008-09-30. One Domains product (359), subscription
 
 **Gold**
 
-| Month-end | Opening | Closing | Movement | Inactive months | After-grace flag |
+| Month-end | Opening | Closing | Movement | Inactive months | Churn flag (KPI 6) |
 |---|---|---|---|---|---|
 | 2019-09 | 0.00 | 3.21 | new | | |
 | 2019-10 … 2020-08 | 3.21 | 3.21 | unchanged | | |
-| 2020-09 | 3.21 | 0.00 | churn | 1 | `is_churned_after_grace = false` |
-| 2020-10 | 0.00 | 3.38 | reactivation | 1 | `is_reactivated_after_grace = false` |
+| 2020-09 | 3.21 | 0.00 | churn | 1 | `is_churned = false` |
+| 2020-10 | 0.00 | 3.38 | reactivation | 1 | |
 | 2020-11 … 2021-09 | 3.38 | 3.38 | unchanged | | |
-| 2021-10 | 3.38 | 0.00 | churn | | `is_churned_after_grace = true` |
+| 2021-10 | 3.38 | 0.00 | churn | | `is_churned = true` |
 
 **Why this is correct**
 
@@ -174,8 +174,8 @@ Italy, segment Ret-E, joined 2008-09-30. One Domains product (359), subscription
   is a reactivation, not a new customer.
 - **Grace period**: the customer was inactive for only one month-end. The Bronze `expiredate` of the first
   order (2020-10-23) shows that the domain had not actually lapsed when it was renewed. The grace-period
-  KPI therefore does not count this as churn (`is_churned_after_grace = false`, and the return is not a
-  reactivation after grace). The bridge still shows churn followed by reactivation, so it reconciles every
+  KPI therefore does not count this as churn (`is_churned = false`), and the return does not count as a
+  reactivation after grace. The bridge still shows churn followed by reactivation, so it reconciles every
   month.
 - **2021-10 churn**: the second period ends on 2021-10-03 with no further order, so this is churn under
   both definitions.
@@ -252,6 +252,6 @@ fixed expectation, so an accidental change to the variables is caught.
   extract was filtered. Lines longer than 12 months (about 10% of MRR) are still understated in 2021–2022,
   by up to about 5% of total MRR.
 - **Missing renewal periods**: some renewal periods are missing from the extract. This inflates churn and
-  reactivation. `is_probable_data_gap` flags 2,026 churn events in the window (an upper bound).
+  reactivation. 2,026 churn events in the window end in a return after about 12 or 24 inactive months, matching one or two missing renewal periods (an upper bound). Most churn events are contradicted by a still-running paid subscription; `adjusted_churn_rate_pct` leaves them out.
 - **New customers**: `new` means the first paid month in the extract. Only 10,270 of the 40,099 new
   customers in the window are new logos (joined within 12 months).

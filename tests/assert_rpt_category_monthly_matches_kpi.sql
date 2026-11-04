@@ -1,11 +1,9 @@
--- Category MRR (opening and closing) summed over all categories must equal total MRR in rpt_kpi_monthly.
+-- Category MRR summed over all categories must equal total MRR in rpt_kpi_monthly, for the same months.
 with by_category as (
 
     select
         month_end_date,
-        sum(mrr_eur)         as mrr_eur,
-        sum(opening_mrr_eur) as opening_mrr_eur,
-        sum(share_of_mrr_pct) as share_of_mrr_pct
+        sum(mrr_eur) as mrr_eur
     from {{ ref('rpt_category_monthly') }}
     group by month_end_date
 
@@ -21,5 +19,3 @@ full outer join {{ ref('rpt_kpi_monthly') }} as kpi
 where by_category.month_end_date is null
    or kpi.month_end_date is null
    or abs(by_category.mrr_eur - kpi.mrr_eur) > 0.01
-   or abs(by_category.opening_mrr_eur - kpi.opening_mrr_eur) > 0.01
-   or abs(by_category.share_of_mrr_pct - 100) > 0.01

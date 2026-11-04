@@ -20,12 +20,7 @@ month_ends as (
 
 select
     month_end_date,
-    trunc(month_end_date, 'MM')                                     as month_start_date,
     year(month_end_date)                                            as year,
-    quarter(month_end_date)                                         as quarter,
-    concat(year(month_end_date), '-Q', quarter(month_end_date))     as year_quarter,
-    month(month_end_date)                                           as month_number,
-    date_format(month_end_date, 'MMMM')                             as month_name,
     date_format(month_end_date, 'yyyy-MM')                          as year_month,
     -- Reporting window from dbt vars (see dbt_project.yml for why these months).
     month_end_date between date'{{ var("reporting_start_month") }}'
