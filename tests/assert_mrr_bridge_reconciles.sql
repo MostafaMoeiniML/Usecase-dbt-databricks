@@ -1,9 +1,8 @@
--- For every month and both grains: opening + new + expansion + reactivation - contraction - churn = closing,
+-- For every month at customer level: opening + new + expansion + reactivation - contraction - churn = closing,
 -- opening equals the previous month's closing, and closing equals paid MRR in int_mrr_order_months.
 with bridge as (
 
     select
-        'product' as grain,
         month_end_date,
         sum(opening_mrr_eur)        as opening_mrr_eur,
         sum(new_mrr_eur)            as new_mrr_eur,
@@ -12,21 +11,6 @@ with bridge as (
         sum(contraction_mrr_eur)    as contraction_mrr_eur,
         sum(churn_mrr_eur)          as churn_mrr_eur,
         sum(mrr_eur)                as closing_mrr_eur
-    from {{ ref('fct_mrr_monthly') }}
-    group by month_end_date
-
-    union all
-
-    select
-        'customer',
-        month_end_date,
-        sum(opening_mrr_eur),
-        sum(new_mrr_eur),
-        sum(expansion_mrr_eur),
-        sum(reactivation_mrr_eur),
-        sum(contraction_mrr_eur),
-        sum(churn_mrr_eur),
-        sum(mrr_eur)
     from {{ ref('fct_customer_monthly') }}
     group by month_end_date
 
@@ -49,8 +33,7 @@ checks as (
         coalesce(source_mrr.source_mrr_eur, 0)       as source_mrr_eur
     from bridge
     left join bridge as previous_bridge
-        on bridge.grain = previous_bridge.grain
-       and previous_bridge.month_end_date = last_day(add_months(bridge.month_end_date, -1))
+        on previous_bridge.month_end_date = last_day(add_months(bridge.month_end_date, -1))
     left join source_mrr
         on bridge.month_end_date = source_mrr.month_end_date
 

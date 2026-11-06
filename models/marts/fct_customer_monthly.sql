@@ -32,22 +32,6 @@ paid_months as (
 
 ),
 
--- Paid subscriptions per customer with their own lifecycle dates. Ended or blocked statuses are left out.
-open_paid_subscriptions as (
-
-    select distinct
-        orders.client_id as customer_id,
-        subscriptions.start_date,
-        subscriptions.expire_date
-    from {{ ref('int_orders_enriched') }} as orders
-    inner join {{ ref('stg_subscriptions') }} as subscriptions
-        on orders.subscription_id = subscriptions.subscription_id
-    where orders.is_paid_line
-      and not orders.has_subscription_conflict
-      and coalesce(subscriptions.status, '') not in ('CANCELLED', 'SUSPENDED', 'TO DELETE', 'LOST', 'UNPAID')
-
-),
-
 -- The month after a paid month without paid MRR gets an explicit 0 row, so churned MRR shows up as a movement.
 churn_months as (
 
@@ -77,11 +61,7 @@ with_context as (
         all_months.*,
         coalesce(previous_month.mrr_eur, 0) as opening_mrr_eur,
         customers.first_paid_month,
-        customers.join_date,
-        min(case when all_months.mrr_eur > 0 then all_months.month_end_date end) over (
-            partition by all_months.customer_id order by all_months.month_end_date
-            rows between 1 following and unbounded following
-        ) as next_paid_month_after
+        customers.join_date
     from all_months
     left join paid_months as previous_month
         on all_months.customer_id = previous_month.customer_id
@@ -105,43 +85,14 @@ classified as (
         end as movement_type
     from with_context
 
-),
-
--- On a churn row: month-ends without paid MRR until the customer returns (NULL if never). Drives the grace period.
-with_inactive_months as (
-
-    select
-        *,
-        case
-            when movement_type = 'churn'
-                then cast(round(months_between(next_paid_month_after, month_end_date)) as int)
-        end as inactive_months
-    from classified
-
-),
-
--- A churn is contradicted when the customer still holds a paid subscription that started before and
--- expires after the churn month: the order for that period is most likely missing from the extract.
-contradicted_churns as (
-
-    select distinct
-        churns.customer_id,
-        churns.month_end_date
-    from with_inactive_months as churns
-    inner join open_paid_subscriptions
-        on churns.customer_id = open_paid_subscriptions.customer_id
-       and open_paid_subscriptions.start_date <= churns.month_end_date
-       and open_paid_subscriptions.expire_date > churns.month_end_date
-    where churns.movement_type = 'churn'
-
 )
 
 select
-    with_inactive_months.customer_id,
-    with_inactive_months.month_end_date,
-    with_inactive_months.mrr_eur,
-    with_inactive_months.opening_mrr_eur,
-    with_inactive_months.movement_type,
+    classified.customer_id,
+    classified.month_end_date,
+    classified.mrr_eur,
+    classified.opening_mrr_eur,
+    classified.movement_type,
     case when movement_type = 'new'          then mrr_eur - opening_mrr_eur else 0 end as new_mrr_eur,
     case when movement_type = 'expansion'    then mrr_eur - opening_mrr_eur else 0 end as expansion_mrr_eur,
     case when movement_type = 'reactivation' then mrr_eur - opening_mrr_eur else 0 end as reactivation_mrr_eur,
@@ -154,14 +105,9 @@ select
         movement_type = 'new' and months_between(first_paid_month, join_date) <= 12,
         false
     )                                as is_new_logo,
-    -- Churn KPI with a 1-month grace period: a customer who is back at the next month-end has not churned.
-    coalesce(movement_type = 'churn' and (inactive_months is null or inactive_months > 1), false)
-                                     as is_churned,
-    contradicted_churns.customer_id is not null as is_churn_contradicted_by_subscription,
+    -- Churned: paid MRR at the previous month-end, none at this one (same rule as churn in the MRR bridge).
+    movement_type = 'churn'          as is_churned,
 
     paid_category_count,
     paid_category_count > 1          as is_cross_sold
-from with_inactive_months
-left join contradicted_churns
-    on with_inactive_months.customer_id = contradicted_churns.customer_id
-   and with_inactive_months.month_end_date = contradicted_churns.month_end_date
+from classified

@@ -5,5 +5,3 @@ logs/
 **/dbt_packages/
 .env
 profiles.yml
-CLAUDE.md
-.claude/

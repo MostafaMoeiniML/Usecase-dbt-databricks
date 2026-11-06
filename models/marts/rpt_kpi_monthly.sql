@@ -1,4 +1,4 @@
--- KPI framework: one row per reporting month with the 10 KPIs, the adjusted churn rate and the MRR bridge.
+-- KPI framework: one row per reporting month with the 10 KPIs and the MRR bridge.
 -- KPIs are computed over all months first, so year-over-year and 12-month retention have their base,
 -- and only then filtered to the reporting window.
 {%- set first_complete_base_month = "last_day(add_months(date'" ~ var('reporting_start_month') ~ "', -1))" %}
@@ -29,9 +29,9 @@ monthly as (
         count_if(opening_mrr_eur > 0)                                      as opening_customers,
         count_if(is_active)                                                as active_customers,
         count_if(is_churned)                                               as churned_customers,
-        count_if(is_churned and not is_churn_contradicted_by_subscription) as churned_customers_not_contradicted,
         count_if(is_new_logo)                                              as new_logos,
-        count_if(is_cross_sold)                                            as cross_sold_customers
+        count_if(is_cross_sold)                                            as cross_sold_customers,
+        avg(case when is_active then paid_category_count end)              as avg_categories_per_customer
     from customer_months
     group by month_end_date
 
@@ -77,9 +77,9 @@ all_months as (
         coalesce(monthly.opening_customers, 0)                   as opening_customers,
         coalesce(monthly.active_customers, 0)                    as active_customers,
         coalesce(monthly.churned_customers, 0)                   as churned_customers,
-        coalesce(monthly.churned_customers_not_contradicted, 0)  as churned_customers_not_contradicted,
         coalesce(monthly.new_logos, 0)                           as new_logos,
         coalesce(monthly.cross_sold_customers, 0)                as cross_sold_customers,
+        monthly.avg_categories_per_customer,
         retention.base_mrr_12m_ago_eur,
         retention.base_current_mrr_eur,
         retention.base_retained_mrr_eur,
@@ -126,10 +126,10 @@ select
         then cast(100 * base_current_mrr_eur / nullif(base_mrr_12m_ago_eur, 0) as double) end  as net_revenue_retention_pct,
     case when has_complete_12m_base
         then cast(100 * base_retained_mrr_eur / nullif(base_mrr_12m_ago_eur, 0) as double) end as gross_revenue_retention_pct,
-    -- KPI 6: Customer churn rate (1-month grace)
+    -- KPI 6: Customer churn rate (same churn rule as the MRR bridge)
     cast(100 * churned_customers / nullif(opening_customers, 0) as double)                     as customer_churn_rate_pct,
-    -- Adjusted churn: leaves out churn contradicted by a still-running paid subscription (lower-bound estimate).
-    cast(100 * churned_customers_not_contradicted / nullif(opening_customers, 0) as double)    as adjusted_churn_rate_pct,
+    -- Revenue churn: MRR lost to churn and contraction as a share of opening MRR.
+    cast(100 * (churn_mrr_eur + contraction_mrr_eur) / nullif(opening_mrr_eur, 0) as double)   as revenue_churn_rate_pct,
     -- KPI 7: Active paying customers
     active_customers,
     -- KPI 8: New logos
@@ -137,6 +137,8 @@ select
     -- KPI 9: ARPU
     cast(mrr_eur / nullif(active_customers, 0) as decimal(18, 4))                              as arpu_eur,
     -- KPI 10: Cross-sell rate (paid categories only)
-    cast(100 * cross_sold_customers / nullif(active_customers, 0) as double)                   as cross_sell_rate_pct
+    cast(100 * cross_sold_customers / nullif(active_customers, 0) as double)                   as cross_sell_rate_pct,
+    -- Depth of cross-sell: paid product categories per active customer.
+    cast(avg_categories_per_customer as double)                                                as avg_categories_per_customer
 from kpis
 where is_reporting_month

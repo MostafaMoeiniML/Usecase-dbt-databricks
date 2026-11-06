@@ -15,7 +15,7 @@ by hand behave as the business rules intend.
 
 | Models | Tests | Pass | Warn | Error |
 |---|---|---|---|---|
-| 11 (4 views, 7 tables) | 150 | 160 | 1 | 0 |
+| 12 (4 views, 8 tables) | 156 | 167 | 1 | 0 |
 
 The pass count covers both the model builds and the tests. The single warning is expected:
 4 orders reference a `subscription_id` that does not exist in the subscriptions table. They are kept and
@@ -44,8 +44,7 @@ data quality items in the project documentation.
 | − placeholder prices | | −65,742 at 0 MRR | Price 0.01, free bundled products [5]. Kept as eligible with 0 MRR. |
 | **Paid lines** | **108,114** | | Drive MRR and active status |
 | Order-line-months (`int_mrr_order_months`) | 2,077,661 | | Eligible lines × month-ends active (1,340,158 paid) |
-| Paid customer × product × month-ends | 1,213,973 | −126,185 combined | Several lines of the same product in one month are summed |
-| **`fct_mrr_monthly`** | **1,305,536** | +91,563 churn rows | Churn row (MRR 0) in the first month without paid MRR |
+| **`fct_mrr_monthly`** | **1,213,973** | −126,185 combined | Paid customer × product × month-ends; several lines of the same product in one month are summed |
 | Paid customer × month-ends | 961,564 | | |
 | **`fct_customer_monthly`** | **1,026,018** | +64,454 churn rows | Churn row at customer level |
 
@@ -84,7 +83,7 @@ the Gold grains neither creates nor loses revenue.
 | Every client in both facts exists in `dim_customer` | all rows | 0 missing |
 | Every product in `fct_mrr_monthly` exists in `dim_product` | all rows | 0 missing |
 | Every month in both facts exists in `dim_date` | all rows | 0 missing |
-| MRR bridge (opening + new + expansion + reactivation − contraction − churn = closing; opening = previous closing) | every month, both grains | Passes (singular test `assert_mrr_bridge_reconciles`) |
+| MRR bridge (opening + new + expansion + reactivation − contraction − churn = closing; opening = previous closing) | every month, customer level | Passes (singular test `assert_mrr_bridge_reconciles`) |
 
 MRR by category at selected month-ends (EUR):
 
@@ -137,7 +136,7 @@ Italy, segment Ret-E, joined 2017-03-03. One Applications product (1588).
   starts on 2020-08-15. At 2020-08-31 only the renewal is active, at a higher price (€33.90 instead of
   €25.00), so MRR rises from €2.08 to €2.83. The renewal is contiguous, with no gap and no double count.
 - **2021-08 churn**: the renewal ends on 2021-08-15 and there is no further order, so there is no paid MRR
-  at 2021-08-31. This is churn under both definitions (`is_churned = true`).
+  at 2021-08-31. This is churn (`is_churned = true`).
 - In total the customer has 24 paid month-ends, 12 per 12-month line, and the MRR sums to €25.00 + €33.90
   = €58.90.
 
@@ -161,7 +160,7 @@ Italy, segment Ret-E, joined 2008-09-30. One Domains product (359), subscription
 |---|---|---|---|---|---|
 | 2019-09 | 0.00 | 3.21 | new | | |
 | 2019-10 … 2020-08 | 3.21 | 3.21 | unchanged | | |
-| 2020-09 | 3.21 | 0.00 | churn | 1 | `is_churned = false` |
+| 2020-09 | 3.21 | 0.00 | churn | 1 | `is_churned = true` |
 | 2020-10 | 0.00 | 3.38 | reactivation | 1 | |
 | 2020-11 … 2021-09 | 3.38 | 3.38 | unchanged | | |
 | 2021-10 | 3.38 | 0.00 | churn | | `is_churned = true` |
@@ -172,13 +171,11 @@ Italy, segment Ret-E, joined 2008-09-30. One Domains product (359), subscription
   ten days late. At 2020-09-30 nothing is active, so the MRR bridge shows the €3.21 leaving as churn.
 - **2020-10 reactivation**: the renewal is active on 2020-10-31. The customer had paid MRR before, so this
   is a reactivation, not a new customer.
-- **Grace period**: the customer was inactive for only one month-end. The Bronze `expiredate` of the first
-  order (2020-10-23) shows that the domain had not actually lapsed when it was renewed. The grace-period
-  KPI therefore does not count this as churn (`is_churned = false`), and the return does not count as a
-  reactivation after grace. The bridge still shows churn followed by reactivation, so it reconciles every
-  month.
-- **2021-10 churn**: the second period ends on 2021-10-03 with no further order, so this is churn under
-  both definitions.
+- **Late renewal**: the customer was inactive for only one month-end. The Bronze `expiredate` of the first
+  order (2020-10-23) shows that the domain had not actually lapsed when it was renewed. The churn KPI uses
+  the same rule as the bridge, so this counts as churn (`is_churned = true`) followed by a reactivation, and
+  the bridge reconciles every month.
+- **2021-10 churn**: the second period ends on 2021-10-03 with no further order, so this is churn again.
 
 ### 4.3 Cross-sold customer – `AA9874-EURO`
 
@@ -197,7 +194,7 @@ Italy, segment Ret-E, joined 2009-02-04. Three paid products in two categories.
 Bronze `expiredate` lies 20 months after its order date. The MRR period follows the documented rule,
 order_date + duration_months, so it is not affected.
 
-**Gold** (customer grain, with the product-grain movements behind it)
+**Gold** (customer grain, with the product changes behind it)
 
 | Month-end | Opening | Closing | Customer movement | Paid categories | Cross-sold | Product movements |
 |---|---|---|---|---|---|---|
@@ -224,9 +221,9 @@ order_date + duration_months, so it is not affected.
 - **2021-06 expansion**: a different Applications product (1647) starts, so cross-sell is true again.
 - **2022-01 contraction and 2022-06 churn**: the Domains product ends on 2022-01-20, and the last product
   ends on 2022-06-12 with no further orders. Only then does the customer churn.
-- The example shows why both grains are needed. Product swaps appear as churn plus new at product grain
-  (category performance) but as net movements at customer grain (customer retention). Both bridges
-  reconcile to the same closing MRR.
+- The example shows why the grain matters. Movements are computed at customer grain (customer retention)
+  and at customer × category grain (category performance), so a product swap shows as a net movement, not
+  as churn plus new. Both bridges reconcile to the same closing MRR.
 
 ---
 
@@ -252,6 +249,17 @@ fixed expectation, so an accidental change to the variables is caught.
   extract was filtered. Lines longer than 12 months (about 10% of MRR) are still understated in 2021–2022,
   by up to about 5% of total MRR.
 - **Missing renewal periods**: some renewal periods are missing from the extract. This inflates churn and
-  reactivation. 2,026 churn events in the window end in a return after about 12 or 24 inactive months, matching one or two missing renewal periods (an upper bound). Most churn events are contradicted by a still-running paid subscription; `adjusted_churn_rate_pct` leaves them out.
+  reactivation. 2,026 churn events in the window end in a return after about 12 or 24 inactive months, matching one or two missing renewal periods (an upper bound).
 - **New customers**: `new` means the first paid month in the extract. Only 10,270 of the 40,099 new
   customers in the window are new logos (joined within 12 months).
+
+---
+
+## 7. Source data notes
+
+These oddities come from the source extract. They have no effect on the KPIs and are kept as delivered.
+
+- **64 customers joined after their first paid month** (`join_date` later than `first_paid_month`).
+- **1 join date lies in 2024** (2024-05-09), after the extract; the customer never paid.
+- **1 placeholder product name** (`!!NOPCODE!!`).
+- **24 template product names** containing unfilled text such as `$domains{domain}`.
